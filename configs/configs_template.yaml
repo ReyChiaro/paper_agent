@@ -1,4 +1,4 @@
-_target_: configs.cfg_mappings.Configs
+_target_: src.cfg_mappings.Configs
 _recursive_: false
 
 api_key: api-key
@@ -9,7 +9,7 @@ extract_model_name: qwen-long
 model_name: model-name
 
 extractor:
-  _target_: cfg_mappings.ExtractorConfigs
+  _target_: src.cfg_mappings.ExtractorConfigs
   model_name: ${extract_model_name}
   temperature: 0.2
   prompt_file: prompts/pdf_extract_prompt.md
