@@ -10,6 +10,6 @@ outputs
 documents
 
 configs.yaml
-
+test.py
 # Virtual environments
 .venv
