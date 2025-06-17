@@ -53,13 +53,10 @@ class PDFExtractor:
         updated_files = candidates - existed_files
         if existed_files:
             existed_ids = [file_info["id"] for file_info in file_infos if file_info["filename"] in existed_files]
+            self.logger.info(f"Existing files found in bailian platform, these files will not be uploaded:")
             for name, fid in zip(existed_files, existed_ids):
                 self.pdf_metas[name] = fid
-            print(self.pdf_metas)
-        if updated_files != set(self.pdf_paths):
-            self.logger.info(f"Existing files found in bailian platform, these files will not be uploaded:")
-            for file_name in existed_files:
-                self.logger.info(f"\n - [name] {file_name}\n - [id] {self.pdf_metas[file_name]}")
+                self.logger.info(f"\n - [name] {name}\n - [id] {fid}")
         return existed_ids
 
     async def _upload_pdf(
@@ -84,12 +81,6 @@ class PDFExtractor:
                 )
                 self.pdf_metas[file_name] = file.id
         return self.pdf_metas[file_name]
-
-    async def _upload_pdfs_with_repeat_check(
-        self,
-        pdf_path: Path,
-    ) -> str:
-        existed_ids: list[str] = self._file_repeat_check()
 
     async def _extract_title(
         self,
