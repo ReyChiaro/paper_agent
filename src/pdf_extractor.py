@@ -1,9 +1,4 @@
-import os
 import re
-import sys
-import openai
-import asyncio
-import logging
 
 from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
@@ -12,9 +7,9 @@ from marker.output import text_from_rendered
 from PIL import Image
 from pathlib import Path
 
+from src.logger import get_logger, progress, redirect_stderr, StderrInterceptor
 from src.cfg_mappings import ExtractorConfigs
-from src.paper_info import Paper, Contents, Citation, Author
-from src.client import get_client, get_aclient
+from src.client import get_client
 
 
 class PDFExtractor:
@@ -24,8 +19,8 @@ class PDFExtractor:
         pdf_paths: list[Path],
         extractor_cfgs: ExtractorConfigs,
     ):
-        self.logger = logging.getLogger(__name__)
-        self.aclient = get_aclient()
+        self.logger = get_logger(__name__)
+        self.client = get_client()
 
         self.cfg: ExtractorConfigs = extractor_cfgs
 
@@ -85,23 +80,26 @@ class PDFExtractor:
         self,
         pdf_path: Path,
     ) -> tuple[Path, str, str]:
+
+        self.logger.info(f"Start `marker` to convert PDF: {pdf_path}")
+        stderr_interceptor = StderrInterceptor()
+        # with progress:
+        #     with redirect_stderr(stderr_interceptor):
         rendered = self.pdf_converter(str(pdf_path))
         markdown_text, _, images = text_from_rendered(rendered)
+        self.logger.info(f"Converting finished")
 
         title = self.extract_pdf_title(markdown_text)
-        print(title)
         normalized_title = self.normalize_title(title)
         normalized_title = normalized_title[:50]
-        print(normalized_title)
+        self.logger.info(f"Paper title: {title}, normalized title: {normalized_title}")
 
         save_dir = self.output_dir / normalized_title
-        print(save_dir)
-        conflict_count = 1
-        while save_dir.exists():
-            save_dir = self.output_dir / f"{normalized_title}-{conflict_count}"
-            conflict_count += 1
+        # conflict_count = 1
+        # while save_dir.exists():
+        #     save_dir = self.output_dir / f"{normalized_title}-{conflict_count}"
+        #     conflict_count += 1
         save_dir.mkdir(parents=True, exist_ok=True)
-        print(images.items())
 
         [
             self.save_images(image, save_dir / path_to_save)
@@ -110,5 +108,29 @@ class PDFExtractor:
 
         with open(save_dir / f"{normalized_title}.md", "w") as md:
             md.write(markdown_text)
+        self.logger.info(f"Markdown files and images saved to {save_dir}")
 
         return save_dir, title, normalized_title
+
+    def files_repeat_check(
+        self,
+        files: list[Path],
+    ) -> list[Path]:
+        server_files = self.client.files.list().model_dump()["data"]
+        existed_files = {info["filename"]: info["id"] for info in server_files}
+        candidate_files = set(f.name for f in files)
+        repeat_files = candidate_files.intersection(existed_files.keys())
+        if repeat_files:
+            self.logger.info(
+                f"Following files already exist on the server, they will not be uploaded:"
+            )
+            for f in repeat_files:
+                self.logger.info(f"- {f} (id: {existed_files[f]})")
+        return [f for f in files if f.name not in repeat_files]
+
+    def upload_file(
+        self,
+        file_path: str,
+    ) -> str:
+        file_info = self.client.files.create(file=file_path, purpose="file-extract")
+        return file_info.id
