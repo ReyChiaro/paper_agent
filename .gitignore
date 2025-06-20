@@ -9,7 +9,14 @@ wheels/
 outputs
 documents
 
+_*[A-Za-z0-9].py
 configs.yaml
+hydra*
 test.py
+*.log
+log*
+logs/
+loggings/
+
 # Virtual environments
 .venv

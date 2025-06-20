@@ -22,7 +22,6 @@ class Citation:
 @dataclass
 class Contents:
 
-    abstract: str | None
     introduction: str | None
     related_work: str | None
     methodology: str | None
@@ -49,6 +48,8 @@ class Paper:
 
     # Paper properties
     title: str
+    authors: list[Author]
+    abstract: str
     tags: list[str]
 
     # Short contents of the paper

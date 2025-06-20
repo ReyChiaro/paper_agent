@@ -17,26 +17,22 @@ def main(configs: Configs):
 
     async def demo(configs: Configs):
         pdf_paths = [
-            Path(f"{os.getcwd()}/documents/{f}") for f in os.listdir("documents") if f.endswith(".pdf")
+            Path(f"{os.getcwd()}/documents/{f}")
+            for f in os.listdir("documents")
+            if f.endswith(".pdf")
         ]
         print(pdf_paths)
-        extractor_cfg = instantiate(configs.extractor)
+
+        extractor_cfgs = instantiate(configs.extractor)
         extractor = PDFExtractor(
-            extractor_cfg=extractor_cfg,
+            extractor_cfgs=extractor_cfgs,
             pdf_paths=pdf_paths,
         )
-        existed_ids = extractor._file_repeat_check()
-        print(existed_ids)
-        pdf_ids = [await extractor._upload_pdf(pdf_path) for pdf_path in extractor.pdf_paths]
-        print(pdf_ids)
-        titles = [await extractor._extract_title(pdf_id) for pdf_id in pdf_ids]
-        print(titles)
+        results = [extractor.convert_pdf_to_markdown(pdf_path) for pdf_path in pdf_paths]
+        print(results)
 
     asyncio.run(demo(configs))
 
-if __name__ =="__main__":
+
+if __name__ == "__main__":
     main()
-
-        
-
-    

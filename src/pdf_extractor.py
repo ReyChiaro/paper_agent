@@ -1,9 +1,19 @@
+import os
+import re
+import sys
+import openai
 import asyncio
 import logging
 
+from marker.config.parser import ConfigParser
+from marker.converters.pdf import PdfConverter
+from marker.models import create_model_dict
+from marker.output import text_from_rendered
+from PIL import Image
 from pathlib import Path
 
 from src.cfg_mappings import ExtractorConfigs
+from src.paper_info import Paper, Contents, Citation, Author
 from src.client import get_client, get_aclient
 
 
@@ -11,95 +21,94 @@ class PDFExtractor:
 
     def __init__(
         self,
-        extractor_cfg: ExtractorConfigs,
         pdf_paths: list[Path],
-    ) -> None:
-        
+        extractor_cfgs: ExtractorConfigs,
+    ):
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
-
-        self.cfg: ExtractorConfigs = extractor_cfg
-        self.model_name: str = self.cfg.model_name
-        self.temperature: float = self.cfg.temperature
-        self.prompt: str = open(self.cfg.prompt_file).read()
-        
-        self.pdf_paths: list[Path] = pdf_paths
-        self._pdf_path_exists()
-
-        # Record the PDF file names and corresponding ids in this batch of PDF files
-        self.pdf_metas: dict[str, str] = {k.name: "" for k in self.pdf_paths}
-        
-        self.client = get_client()
         self.aclient = get_aclient()
-        self.semaphore = asyncio.Semaphore(self.cfg.num_pdf_concurrent)
 
-    def _pdf_path_exists(self) -> bool:
-        for pdf_path in self.pdf_paths:
-            if not pdf_path.exists():
-                raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-        return True
-    
-    def _file_repeat_check(
+        self.cfg: ExtractorConfigs = extractor_cfgs
+
+        self.output_dir = Path(self.cfg.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.pdf_paths: list[Path] = pdf_paths
+
+        configs = {
+            "output_format": "markdown",
+            "output_dir": self.output_dir,
+            "use_llm": False,
+            "workers": 0,
+        }
+        config_parser = ConfigParser(configs)
+        self.pdf_converter = PdfConverter(
+            config=config_parser.generate_config_dict(),
+            artifact_dict=create_model_dict(),
+            processor_list=config_parser.get_processors(),
+            renderer=config_parser.get_renderer(),
+            llm_service=config_parser.get_llm_service(),
+        )
+
+    def check_pdf_paths(
         self,
-    ) -> list[str]:
-        """
-        Checks if the PDF files to be uploaded already exist in the bailian platform. If they do, it returns their IDs and updates the `self.pdf_paths` list to exclude these files.
-        """
-        existed_ids = []
-        file_infos = self.client.files.list().model_dump()["data"]
-        file_names = set([file_info["filename"] for file_info in file_infos])
-        candidates = set(self.pdf_metas.keys())
-        existed_files = file_names.intersection(candidates)
-        updated_files = candidates - existed_files
-        if existed_files:
-            existed_ids = [file_info["id"] for file_info in file_infos if file_info["filename"] in existed_files]
-            self.logger.info(f"Existing files found in bailian platform, these files will not be uploaded:")
-            for name, fid in zip(existed_files, existed_ids):
-                self.pdf_metas[name] = fid
-                self.logger.info(f"\n - [name] {name}\n - [id] {fid}")
-        return existed_ids
+    ) -> None:
+        for p in self.pdf_paths:
+            if not p.exists():
+                raise FileNotFoundError(f"PDF file not found: {p}")
 
-    async def _upload_pdf(
+    def extract_pdf_title(
+        self,
+        markdown_text: str,
+    ) -> list[str]:
+        return re.findall(r"^# (.+)$", markdown_text, re.MULTILINE)[0]
+
+    def normalize_title(
+        self,
+        title: str,
+    ) -> str:
+        title = re.sub(r"[^A-Za-z0-9 ]+", "", title)
+        title = title.lower()
+        title = re.sub(r"\s+", "-", title)
+        return title
+
+    def save_images(
+        self,
+        image: Image.Image,
+        path_to_save: Path,
+    ) -> None:
+        try:
+            image.save(path_to_save)
+        except Exception as e:
+            self.logger.warning(f"Failed to save image {path_to_save}: {e}")
+
+    def convert_pdf_to_markdown(
         self,
         pdf_path: Path,
-    ) -> str:
-        """
-        Uploads one PDF file to bailian platform, and there is no file-repeat check using bailian API, so we provided a file-repeat checking method `_file_repeat_check`. If you want to upload files, please invoke the repeat-check method. Below is the reference of bailian platform.
+    ) -> tuple[Path, str, str]:
+        rendered = self.pdf_converter(str(pdf_path))
+        markdown_text, _, images = text_from_rendered(rendered)
 
-        Ref: 
-        - https://bailian.console.aliyun.com/?tab=api#/api/?type=model&url=https%3A%2F%2Fhelp.aliyun.com%2Fdocument_detail%2F2712576.html&renderType=iframe
-        - https://help.aliyun.com/zh/model-studio/openai-file-interface?spm=0.0.0.i5
+        title = self.extract_pdf_title(markdown_text)
+        print(title)
+        normalized_title = self.normalize_title(title)
+        normalized_title = normalized_title[:50]
+        print(normalized_title)
 
-        NOTE: For current version, only qwen-long is supported for pdf-extraction.
-        """
-        file_name = pdf_path.name
-        if not self.pdf_metas[file_name]:
-            async with self.semaphore:
-                file = await self.aclient.files.create(
-                    file=pdf_path,
-                    purpose="file-extract",
-                )
-                self.pdf_metas[file_name] = file.id
-        return self.pdf_metas[file_name]
+        save_dir = self.output_dir / normalized_title
+        print(save_dir)
+        conflict_count = 1
+        while save_dir.exists():
+            save_dir = self.output_dir / f"{normalized_title}-{conflict_count}"
+            conflict_count += 1
+        save_dir.mkdir(parents=True, exist_ok=True)
+        print(images.items())
 
-    async def _extract_title(
-        self,
-        pdf_id: str,
-    ) -> str:
-        repsonse = await self.aclient.chat.completions.create(
-            model=self.model_name,
-            temperature=self.temperature,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistent that extracts titles from PDF documents."},
-                {"role": "system", "content": f"fileid://{pdf_id}"},
-                {"role": "user", "content": "Identify the title of the pdf document. Please output the title of the pdf document only, without any additional information or sentences.\n\n"
-                "**Examples:**\n\nAttention Is All You Need\n\nLanguage Models are Few-Shot Learners\n\nA Survey of Large Language Models"}
-            ],
-            stream=False,
-            n=1,
-        )
-        content = repsonse.choices[0].message.content.strip()
-        if not content:
-            raise ValueError(f"Failed to extract title from PDF with ID: {pdf_id}")
-        return content
+        [
+            self.save_images(image, save_dir / path_to_save)
+            for path_to_save, image in images.items()
+        ]
 
+        with open(save_dir / f"{normalized_title}.md", "w") as md:
+            md.write(markdown_text)
+
+        return save_dir, title, normalized_title

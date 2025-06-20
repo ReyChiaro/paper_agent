@@ -8,6 +8,7 @@ class ExtractorConfigs:
     temperature: float
     prompt_file: str
     num_pdf_concurrent: int
+    output_dir: str
 
 
 @dataclass
@@ -18,5 +19,6 @@ class Configs:
     embed_name: str
     extract_model_name: str
     model_name: str
+    output_dir: str
 
     extractor: ExtractorConfigs

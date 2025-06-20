@@ -8,9 +8,19 @@ embed_name: embedding-name
 extract_model_name: qwen-long
 model_name: model-name
 
+output_dir: outputs
+
 extractor:
   _target_: src.cfg_mappings.ExtractorConfigs
   model_name: ${extract_model_name}
   temperature: 0.2
   prompt_file: prompts/pdf_extract_prompt.md
   num_pdf_concurrent: 5
+  output_dir: ${output_dir}
+
+hydra:
+  run:
+    dir: hydra-outputs/${now:%m-%d-%H-%M-%S}
+  sweep:
+    dir: hydra-outputs/logdir/${hydra.job.override_dirname}
+    subdir: ${now:%m-%d-%H-%M-%S}
