@@ -2,10 +2,9 @@ import io
 import re
 import sys
 import logging
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager
 from rich.logging import RichHandler
 from rich.console import Console
-from rich.live import Live
 from rich.progress import (
     Progress,
     BarColumn,

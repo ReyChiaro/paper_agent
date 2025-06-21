@@ -16,9 +16,18 @@ class Configs:
 
     api_key: str
     base_url: str
+
     embed_name: str
     extract_model_name: str
     model_name: str
+
+    history_window: int
+
+    prompt_dir: str
+    init_prompt_dir: str
+    conversations: str
     output_dir: str
+    meta_file: str
+    index_file: str
 
     extractor: ExtractorConfigs

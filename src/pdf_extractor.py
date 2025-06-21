@@ -1,5 +1,4 @@
 import re
-import threading
 
 from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
@@ -7,19 +6,16 @@ from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from PIL import Image
 from pathlib import Path
-from rich.live import Live
+
 from src.logger import get_logger, beautified_tqdm
 from src.cfg_mappings import ExtractorConfigs
+from src.types.agent_info import ExtractorOutputs
 from src.client import get_client
 
 
 class PDFExtractor:
 
-    def __init__(
-        self,
-        pdf_paths: list[Path],
-        extractor_cfgs: ExtractorConfigs,
-    ):
+    def __init__(self, extractor_cfgs: ExtractorConfigs):
         self.logger = get_logger(__name__)
         self.client = get_client()
 
@@ -27,8 +23,6 @@ class PDFExtractor:
 
         self.output_dir = Path(self.cfg.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        self.pdf_paths: list[Path] = pdf_paths
 
         configs = {
             "output_format": "markdown",
@@ -44,13 +38,6 @@ class PDFExtractor:
             renderer=config_parser.get_renderer(),
             llm_service=config_parser.get_llm_service(),
         )
-
-    def check_pdf_paths(
-        self,
-    ) -> None:
-        for p in self.pdf_paths:
-            if not p.exists():
-                raise FileNotFoundError(f"PDF file not found: {p}")
 
     def extract_pdf_title(
         self,
@@ -80,13 +67,13 @@ class PDFExtractor:
     def convert_pdf_to_markdown(
         self,
         pdf_path: Path,
-    ) -> tuple[Path, str, str]:
+    ) -> ExtractorOutputs:
 
         self.logger.info(f"Start `marker` to convert PDF: {pdf_path}")
         with beautified_tqdm():
             rendered = self.pdf_converter(str(pdf_path))
             markdown_text, _, images = text_from_rendered(rendered)
-                
+
         self.logger.info(f"Converting finished")
 
         title = self.extract_pdf_title(markdown_text)
@@ -95,22 +82,26 @@ class PDFExtractor:
         self.logger.info(f"Paper title: {title}, normalized title: {normalized_title}")
 
         save_dir = self.output_dir / normalized_title
-        # conflict_count = 1
-        # while save_dir.exists():
-        #     save_dir = self.output_dir / f"{normalized_title}-{conflict_count}"
-        #     conflict_count += 1
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        [
+        for path_to_save, image in images.items():
             self.save_images(image, save_dir / path_to_save)
-            for path_to_save, image in images.items()
-        ]
 
         with open(save_dir / f"{normalized_title}.md", "w") as md:
             md.write(markdown_text)
+
         self.logger.info(f"Markdown files and images saved to {save_dir}")
 
-        return save_dir, title, normalized_title
+        outputs = ExtractorOutputs(
+            filename=pdf_path.name,
+            paper_title=title,
+            normalized_title=normalized_title,
+            save_dir=save_dir,
+            num_images=len(images),
+            images=images.keys(),
+        )
+
+        return outputs
 
     def files_repeat_check(
         self,
