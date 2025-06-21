@@ -1,20 +1,28 @@
 _target_: src.cfg_mappings.Configs
 _recursive_: false
 
-api_key: api-key
-base_url: base-url
+api_key: api_key
+base_url: base_url
 
 embed_name: embedding-name
 extract_model_name: qwen-long
 model_name: model-name
 
+history_window: 5
+
+prompt_dir: prompts
+init_prompt_dir: ${prompt_dir}/default
+conversations: conversations
 output_dir: outputs
+
+meta_file: .meta
+index_file: .index
 
 extractor:
   _target_: src.cfg_mappings.ExtractorConfigs
   model_name: ${extract_model_name}
   temperature: 0.2
-  prompt_file: prompts/pdf_extract_prompt.md
+  prompt_file: ${prompt_dir}/pdf_extract_prompt.md
   num_pdf_concurrent: 5
   output_dir: ${output_dir}
 

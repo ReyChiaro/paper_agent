@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import Optional
 
 from src.pdf_extractor import PDFExtractor
-from src.types.agent_info import AgentInputs
-from src.types.agent_info import Conversation
+from src.types.agent_info import (
+    AgentInputs,
+    AgentOutputs,
+    Conversation,
+)
 from src.types.agent_info import ExtractorOutputs
 from src.cfg_mappings import Configs
 
@@ -194,3 +197,24 @@ class Controller:
         agent_inputs.query.append({"role": "user", "content": query})
         agent_inputs.files.update(files)
         return agent_inputs
+
+    def postprocess(
+        self,
+        agent_outputs: AgentOutputs,
+    ) -> AgentOutputs:
+        pass
+
+    def rag(self):
+        pass
+
+    def run_chat(
+        self,
+        agent_inputs: AgentInputs,
+    ) -> AgentOutputs:
+        pass
+    
+    def run_recommand(
+        self,
+    ):
+        pass
+    
