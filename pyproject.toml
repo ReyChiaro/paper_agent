@@ -11,6 +11,7 @@ dependencies = [
     "marker-pdf>=1.7.5",
     "omegaconf>=2.3.0",
     "openai>=1.86.0",
+    "pyfiglet>=1.0.3",
     "requests>=2.32.4",
     "rich>=14.0.0",
     "tokenizer>=3.4.5",
