@@ -1,17 +1,18 @@
 import io
 import re
 import sys
-import time
 import logging
-import threading
-
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
-from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+from contextlib import contextmanager, redirect_stderr
 from rich.logging import RichHandler
 from rich.console import Console
-
-
-console = Console()
+from rich.live import Live
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TimeElapsedColumn,
+)
 
 
 def get_logger(name: str, level=logging.INFO) -> logging.Logger:
@@ -32,89 +33,84 @@ def get_logger(name: str, level=logging.INFO) -> logging.Logger:
 
     return logger
 
-import io
-import re
-import sys
-import time
-import threading
-from contextlib import redirect_stderr
 
-from rich.progress import (
-    Progress, BarColumn, TextColumn,
-    TimeRemainingColumn, TimeElapsedColumn
-)
+class TqdmRedirector(io.TextIOBase):
 
-# === Step 1: 定义正则解析 tqdm 风格的输出 ===
-tqdm_re = re.compile(
-    r'(?P<task>.*?):\s+'
-    r'(?P<percent>\d+)%\|(?P<bar>[^\|]+)\|\s+'
-    r'(?P<done>\d+)/(?P<total>\d+)\s+'
-    r'\[(?P<elapsed>[0-9:.]+)<(?P<eta>[0-9:.]+),\s+'
-    r'(?P<speed>.+?)\]'
-)
-
-# === Step 2: 设置 rich 进度条 ===
-progress = Progress(
-    TextColumn("[bold blue]{task.description}"),
-    BarColumn(),
-    "[progress.percentage]{task.percentage:>3.0f}%",
-    "•",
-    TimeElapsedColumn(),
-    TimeRemainingColumn(),
-    transient=True  # 任务完成后自动清除
-)
-
-# 保存每个 task 的 ID
-task_id_map = {}
-
-# === Step 3: 处理每一行 stderr ===
-def handle_line(line):
-    match = tqdm_re.search(line)
-    if not match:
-        return
-
-    info = match.groupdict()
-    task = info['task'].strip()
-    done = int(info['done'])
-    total = int(info['total'])
-
-    # 注册任务
-    if task not in task_id_map:
-        task_id_map[task] = progress.add_task(task, total=total)
-
-    # 更新任务进度
-    progress.update(task_id_map[task], completed=done)
-
-# === Step 4: 包装 stderr 并实时读取 ===
-class StderrInterceptor(io.StringIO):
-    def __init__(self):
+    def __init__(self, callback=None, prefix=""):
         super().__init__()
+
         self.buffer = ""
+        self.callback = callback
+        self.prefix = prefix
 
-    def write(self, s):
-        self.buffer += s
-        if "\n" in self.buffer:
-            lines = self.buffer.split("\n")
-            for line in lines[:-1]:
-                handle_line(line)
-            self.buffer = lines[-1]
+        self._tqdm_re = re.compile(
+            r"(?P<task>.*?):\s+"
+            r"(?P<percent>\d+)%\|(?P<bar>[^\|]+)\|\s+"
+            r"(?P<done>\d+)/(?P<total>\d+)\s+"
+            r"\[(?P<elapsed>[0-9:.]+)<(?P<eta>[0-9:.]+),\s+"
+            r"(?P<speed>.+?)\]"
+        )
+        self._ansi = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
 
-# # === Step 5: 示例黑盒函数 ===
-# def black_box_function():
-#     from time import sleep
-#     from tqdm import tqdm
+        self.progress = Progress(
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(),
+            "[progress.percentage]{task.percentage:>3.0f}%",
+            "•",
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=Console(file=sys.__stderr__),
+        )
 
-#     for _ in tqdm(range(5), desc="Recognizing layout"):
-#         sleep(0.5)
-#     for _ in tqdm(range(7), desc="Running OCR Detection"):
-#         sleep(0.3)
+        self._task_ids = {}
 
-# # === Step 6: 启动整体包装器 ===
-# def main():
-#     stderr_interceptor = StderrInterceptor()
-#     with progress:
-#         with redirect_stderr(stderr_interceptor):
-#             black_box_function()
+    def _clean_line(self, line: str) -> str:
+        line = line.replace("\r", "")
+        line = self._ansi.sub("", line)
+        return line.strip()
 
-# if __name__ == "__main__":
-#     main()
+    def _handle_line(self, line: str):
+        line = self._clean_line(line)
+        matches = self._tqdm_re.search(line)
+        if not matches:
+            return
+
+        info = matches.groupdict()
+        task = info["task"].strip()
+        done = int(info["done"])
+        total = int(info["total"])
+
+        if task not in self._task_ids:
+            self._task_ids[task] = self.progress.add_task(task, total=total)
+
+        self.progress.update(self._task_ids[task], completed=done)
+
+    def write(self, text: str):
+        self.buffer += text
+
+        while "\r" in self.buffer or "\n" in self.buffer:
+            line_end = min(
+                self.buffer.find("\r") if "\r" in self.buffer else len(self.buffer),
+                self.buffer.find("\n") if "\n" in self.buffer else len(self.buffer),
+            )
+            line = self.buffer[:line_end]
+            self.buffer = self.buffer[line_end + 1 :]
+            self._handle_line(line)
+
+    def flush(self):
+        pass
+
+
+@contextmanager
+def beautified_tqdm():
+    original_stderr = sys.stderr
+    redirector = TqdmRedirector()
+
+    redirector.progress.start()
+
+    try:
+        sys.stderr = redirector
+        yield redirector.progress
+    finally:
+        redirector.progress.stop()
+        sys.stderr = original_stderr

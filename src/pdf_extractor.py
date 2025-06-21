@@ -1,4 +1,5 @@
 import re
+import threading
 
 from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
@@ -6,8 +7,8 @@ from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from PIL import Image
 from pathlib import Path
-
-from src.logger import get_logger, progress, redirect_stderr, StderrInterceptor
+from rich.live import Live
+from src.logger import get_logger, beautified_tqdm
 from src.cfg_mappings import ExtractorConfigs
 from src.client import get_client
 
@@ -82,11 +83,10 @@ class PDFExtractor:
     ) -> tuple[Path, str, str]:
 
         self.logger.info(f"Start `marker` to convert PDF: {pdf_path}")
-        stderr_interceptor = StderrInterceptor()
-        # with progress:
-        #     with redirect_stderr(stderr_interceptor):
-        rendered = self.pdf_converter(str(pdf_path))
-        markdown_text, _, images = text_from_rendered(rendered)
+        with beautified_tqdm():
+            rendered = self.pdf_converter(str(pdf_path))
+            markdown_text, _, images = text_from_rendered(rendered)
+                
         self.logger.info(f"Converting finished")
 
         title = self.extract_pdf_title(markdown_text)
