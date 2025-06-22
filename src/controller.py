@@ -4,8 +4,10 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union, Any
 
+from src.paper_agent import PaperAgent
+from src.paper_rag import PaperRAG
 from src.pdf_extractor import PDFExtractor
 from src.types.agent_info import (
     AgentInputs,
@@ -44,6 +46,15 @@ class Controller:
             .replace("\n", ",")
         )
         self.file_indices = json.loads(f"[{file_indices_str}]")
+
+        self.agent = PaperAgent()
+        self.rag = PaperRAG(
+            rag_chunk=self.cfgs.rag_chunk,
+            rag_overlap=self.cfgs.rag_overlap,
+            vector_store=self.cfgs.rag_store,
+            embedding_model=self.cfgs.embed_name,
+            embedding_dim=self.cfgs.rag_embed_dim,
+        )
 
     def _init_chat(self) -> str:
         chat_id = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -121,6 +132,70 @@ class Controller:
             for p, m in self.file_indices.items():
                 f.write('\{"{}": "{}"\}\n'.format(p.name, str(m)))
 
+    def _store_file_in_markdown(
+        self,
+        file_paths: Union[list[Path], str, Path],
+    ) -> ExtractorOutputs:
+        if isinstance(file_paths, str):
+            file_paths = [Path(file_paths)]
+        if isinstance(file_paths, Path):
+            file_paths = [file_paths]
+        extractor = PDFExtractor(extractor_cfgs=self.cfgs.extractor)
+        # Update the stored markdowns in the disk
+        results: list[ExtractorOutputs] = [
+            extractor.convert_pdf_to_markdown(f) for f in file_paths
+        ]
+        for res in results:
+            # Update meta file in the disk
+            self._write_extractor_outputs_to_meta(res)
+            # Update the file indices in the memory not the disk
+            self._update_file_indices(
+                res.save_dir / res.filename,
+                res.save_dir / self.cfgs.meta_file,
+            )
+        # Write the file indices to the disk
+        self._write_file_indices()
+        return results
+
+    def _store_markdown_in_rag(
+        self,
+        pdf_markdown_maps: dict[str, Path],
+    ) -> Path:
+        """
+        Store markdown into RAG vector store, no matter if the markdowns are already stored in the vector store, this method will always refresh the vector store with the new markdowns. So make sure the markdowns are filtered before calling.
+        """
+        self.rag.load_index()
+        self.rag.load_meta()
+        self.rag.vectorize_markdowns(pdf_markdown_maps)
+        return Path(self.cfgs.rag_store) / "vectors.index"
+
+    def _load_document_chunks(
+        self,
+        query: str,
+    ) -> list[dict[str, Any]]:
+        self.rag.load_index()
+        self.rag.load_meta()
+        id2cid = self.rag.id2chunk
+        query_embed = self.rag.embedding_model.encode(query)
+        _, ids = self.rag.index_id_map.search(query_embed, self.cfgs.rag_topk)
+        chunks = []
+        for cid in ids[0]:
+            if cid in id2cid:
+                uuid_key = id2cid[cid]
+                chunks.append(self.rag.meta[uuid_key])
+        return chunks
+
+    def _convert_rag_chunks_to_message(
+        self,
+        rag_chunks: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        doc = "## Reference Documents\n\n"
+        for i, chunk in enumerate(rag_chunks):
+            doc += f"### Document {i + 1}: {chunk['paper']}\n\n"
+            doc += f"{chunk['chunk']}\n\n"
+        contents = {"role": "system", "content": doc}
+        return contents
+
     def preprocess(
         self,
         agent_inputs: AgentInputs,
@@ -143,48 +218,54 @@ class Controller:
             multiround (bool, optional): If True, the method will load the history messages and concatenate them with the user query. Defaults to False.
         """
         files: set[str] = agent_inputs.files
-        query: str = agent_inputs.query
+        query: list[dict[str, str]] = agent_inputs.query
+        enable_rag: bool = True
 
         if force_refresh:
-            extractor = PDFExtractor(extractor_cfgs=self.cfgs.extractor)
-            results: list[ExtractorOutputs] = [
-                extractor.convert_pdf_to_markdown(f) for f in files
-            ]
-            for res in results:
-                self._write_extractor_outputs_to_meta(res)
-                self._update_file_indices(
-                    res.save_dir / res.filename,
-                    res.save_dir / self.cfgs.meta_file,
-                )
-            self._write_file_indices()
+            extractor_out = self._store_file_in_markdown([Path(f) for f in files])
+            self._store_markdown_in_rag(
+                {
+                    out.paper_title: out.save_dir / f"{out.normalized_title}.md"
+                    for out in extractor_out
+                }
+            )
         elif files.intersection(set(self.file_indices.keys())):
+            # Detect the repeated files
             candidate_files = [
                 Path(f).name for f in files if f not in self.file_indices.keys()
             ]
             if candidate_files:
-                extractor = PDFExtractor(extractor_cfgs=self.cfgs.extractor)
-                results: list[ExtractorOutputs] = [
-                    extractor.convert_pdf_to_markdown(Path(f)) for f in candidate_files
-                ]
-                for res in results:
-                    self._write_extractor_outputs_to_meta(res)
-                    self._update_file_indices(
-                        res.save_dir / res.filename,
-                        res.save_dir / self.cfgs.meta_file,
-                    )
-            self._write_file_indices()
+                markdown_paths = self._store_file_in_markdown(
+                    [Path(f) for f in candidate_files]
+                )
+                self._store_markdown_in_rag(markdown_paths)
 
         # After extracting the files,
         # all selected files map to a meta file,
         # where the converted markdown information is stored.
 
         if not query:
+            enable_rag = False
             if not files:
-                query = open(Path(self.cfgs.init_prompt_dir) / "_greetings.md").read()
+                q = open(Path(self.cfgs.init_prompt_dir) / "_greetings.md").read()
             else:
-                query = open(Path(self.cfgs.init_prompt_dir) / "_summary.md").read()
+                q = open(Path(self.cfgs.init_prompt_dir) / "_summary.md").read()
+            query = [{"role": "user", "content": q}]
 
-        agent_inputs.query = [{"role": "system", "content": self.sys_prompts}]
+        sys_prompts = open(
+            Path(self.cfgs.init_prompt_dir)
+            / f"_sys_prompts{'_rag' if enable_rag else ''}.md"
+        ).read()
+        agent_inputs.query = [{"role": "system", "content": sys_prompts}]
+        if enable_rag:
+            rag_chunks = self._load_document_chunks(query)
+            if rag_chunks:
+                rag_contents = self._convert_rag_chunks_to_message(rag_chunks)
+                agent_inputs.query.extend(rag_contents)
+            else:
+                agent_inputs.query.append(
+                    {"role": "system", "content": "No relevant documents found."}
+                )
         if multiround:
             conversations = self._load_history_conversations()
             contents, refs = self._convert_conversations_to_message(
@@ -192,10 +273,12 @@ class Controller:
                 if len(conversations) > self.win_size * 2
                 else conversations
             )
-            agent_inputs.query.append({"role": "user", "content": contents})
+            agent_inputs.query.extend(contents)
             agent_inputs.files.update(refs)
+
         agent_inputs.query.append({"role": "user", "content": query})
         agent_inputs.files.update(files)
+
         return agent_inputs
 
     def postprocess(
@@ -204,17 +287,13 @@ class Controller:
     ) -> AgentOutputs:
         pass
 
-    def rag(self):
-        pass
-
     def run_chat(
         self,
         agent_inputs: AgentInputs,
     ) -> AgentOutputs:
         pass
-    
+
     def run_recommand(
         self,
     ):
         pass
-    

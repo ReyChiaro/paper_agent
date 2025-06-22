@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from src.client import get_client
 from src.types.agent_info import (
     AgentInputs,
@@ -6,12 +8,13 @@ from src.types.agent_info import (
 )
 
 
-class _Agent:
+class _Agent(object):
 
     def __init__(
         self,
+        prompt_path: Path,
     ):
-        pass
+        self.client = get_client()
 
     def basic_chat(
         self,

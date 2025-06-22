@@ -1,4 +1,5 @@
 from src.agent import _Agent
+from src.paper_rag import PaperRAG
 
 
 class PaperAgent(_Agent):

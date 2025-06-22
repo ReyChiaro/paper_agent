@@ -103,25 +103,25 @@ class PDFExtractor:
 
         return outputs
 
-    def files_repeat_check(
-        self,
-        files: list[Path],
-    ) -> list[Path]:
-        server_files = self.client.files.list().model_dump()["data"]
-        existed_files = {info["filename"]: info["id"] for info in server_files}
-        candidate_files = set(f.name for f in files)
-        repeat_files = candidate_files.intersection(existed_files.keys())
-        if repeat_files:
-            self.logger.info(
-                f"Following files already exist on the server, they will not be uploaded:"
-            )
-            for f in repeat_files:
-                self.logger.info(f"- {f} (id: {existed_files[f]})")
-        return [f for f in files if f.name not in repeat_files]
+    # def files_repeat_check(
+    #     self,
+    #     files: list[Path],
+    # ) -> list[Path]:
+    #     server_files = self.client.files.list().model_dump()["data"]
+    #     existed_files = {info["filename"]: info["id"] for info in server_files}
+    #     candidate_files = set(f.name for f in files)
+    #     repeat_files = candidate_files.intersection(existed_files.keys())
+    #     if repeat_files:
+    #         self.logger.info(
+    #             f"Following files already exist on the server, they will not be uploaded:"
+    #         )
+    #         for f in repeat_files:
+    #             self.logger.info(f"- {f} (id: {existed_files[f]})")
+    #     return [f for f in files if f.name not in repeat_files]
 
-    def upload_file(
-        self,
-        file_path: str,
-    ) -> str:
-        file_info = self.client.files.create(file=file_path, purpose="file-extract")
-        return file_info.id
+    # def upload_file(
+    #     self,
+    #     file_path: str,
+    # ) -> str:
+    #     file_info = self.client.files.create(file=file_path, purpose="file-extract")
+    #     return file_info.id
