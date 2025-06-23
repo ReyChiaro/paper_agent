@@ -2,22 +2,22 @@ import re
 
 from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
 from marker.output import text_from_rendered
+from marker.models import create_model_dict
 from PIL import Image
 from pathlib import Path
 
+from src.singleton import singleton
 from src.logger import get_logger, beautified_tqdm
 from src.cfg_mappings import ExtractorConfigs
 from src.types.agent_info import ExtractorOutputs
-from src.client import get_client
 
 
+@singleton
 class PDFExtractor:
 
     def __init__(self, extractor_cfgs: ExtractorConfigs):
         self.logger = get_logger(__name__)
-        self.client = get_client()
 
         self.cfg: ExtractorConfigs = extractor_cfgs
 
@@ -69,7 +69,7 @@ class PDFExtractor:
         pdf_path: Path,
     ) -> ExtractorOutputs:
 
-        self.logger.info(f"Start `marker` to convert PDF: {pdf_path}")
+        self.logger.info(f"Using `marker` to convert PDF: {pdf_path}")
         with beautified_tqdm():
             rendered = self.pdf_converter(str(pdf_path))
             markdown_text, _, images = text_from_rendered(rendered)
@@ -97,31 +97,9 @@ class PDFExtractor:
             paper_title=title,
             normalized_title=normalized_title,
             save_dir=save_dir,
+            save_name=f"{normalized_title}.md",
             num_images=len(images),
             images=images.keys(),
         )
 
         return outputs
-
-    # def files_repeat_check(
-    #     self,
-    #     files: list[Path],
-    # ) -> list[Path]:
-    #     server_files = self.client.files.list().model_dump()["data"]
-    #     existed_files = {info["filename"]: info["id"] for info in server_files}
-    #     candidate_files = set(f.name for f in files)
-    #     repeat_files = candidate_files.intersection(existed_files.keys())
-    #     if repeat_files:
-    #         self.logger.info(
-    #             f"Following files already exist on the server, they will not be uploaded:"
-    #         )
-    #         for f in repeat_files:
-    #             self.logger.info(f"- {f} (id: {existed_files[f]})")
-    #     return [f for f in files if f.name not in repeat_files]
-
-    # def upload_file(
-    #     self,
-    #     file_path: str,
-    # ) -> str:
-    #     file_info = self.client.files.create(file=file_path, purpose="file-extract")
-    #     return file_info.id

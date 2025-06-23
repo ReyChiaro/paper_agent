@@ -18,8 +18,9 @@ class ExtractorOutputs:
 @dataclass
 class AgentInputs:
 
-    files: set[str]
+    files: list[Path]
     query: list[dict[str, str]]
+    texts: str
 
 
 @dataclass

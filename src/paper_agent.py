@@ -5,7 +5,7 @@ from src.paper_rag import PaperRAG
 class PaperAgent(_Agent):
 
     def __init__(self):
-        super().__init__()
+        super().__init__("")
 
     def recommend(
         self,

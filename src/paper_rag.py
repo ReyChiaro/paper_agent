@@ -7,32 +7,36 @@ from typing import Union
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
+from src.singleton import singleton
+from src.cfg_mappings import RAGConfigs
 
-class PaperRAG(object):
 
-    def __init__(
-        self,
-        rag_chunk: int,
-        rag_overlap: int,
-        vector_store: str,
-        embedding_model: str,
-        embedding_dim: int = 384,
-    ) -> None:
+@singleton
+class PaperRAG:
 
-        self.rag_chunk = rag_chunk
-        self.rag_overlap = rag_overlap
-        self.vector_store = Path(vector_store)
+    def __init__(self, rag_configs: RAGConfigs) -> None:
+
+        self.rag_chunk = rag_configs.rag_chunk
+        self.rag_overlap = rag_configs.rag_overlap
+        self.vector_store = Path(rag_configs.rag_store)
         self.vector_store.mkdir(parents=True, exist_ok=True)
+        self.rag_topk = rag_configs.rag_topk
 
         self.meta = {}
 
-        self.embedding_model = SentenceTransformer(embedding_model)
-        self.index_model = faiss.IndexFlatL2(embedding_dim)
+        self.embedding_model = SentenceTransformer(rag_configs.embedding_model, device="cpu")
+        self.index_model = faiss.IndexFlatL2(rag_configs.rag_embed_dim)
         self.index_id_map = faiss.IndexIDMap(self.index_model)
 
     @property
     def id2chunk(self):
         return {int(uuid.UUID(k)) >> 64: k for k in self.meta.keys()}
+
+    def get_vector_store_path(self) -> Path:
+        return self.vector_store / "vectors.index"
+
+    def get_vector_store_meta_path(self) -> Path:
+        return self.vector_store / "meta.json"
 
     def _split_paper_markdown(
         self,
@@ -72,28 +76,42 @@ class PaperRAG(object):
             np.array(ids, dtype=np.int64),
         )
 
+    def encode(self, texts: Union[list[str], str]) -> np.ndarray:
+        if isinstance(texts, str):
+            texts = [texts]
+        return self.embedding_model.encode(texts).astype(np.float32)
+
+    def search(self, query_embeds: np.ndarray):
+        return self.index_id_map.search(query_embeds, self.rag_topk)
+
     def store_index(self) -> None:
-        faiss.write_index(self.index_id_map, self.vector_store / "vectors.index")
+        faiss.write_index(self.index_id_map, str(self.vector_store / "vectors.index"))
 
     def store_meta(self) -> None:
         meta_file = self.vector_store / "meta.json"
         with open(meta_file, "w") as f:
             json.dump(self.meta, f, indent=4)
 
-    def load_index(self) -> None:
+    def load_index(self) -> bool:
         index_file = self.vector_store / "vectors.index"
-        self.index_id_map = faiss.read_index(index_file)
+        if index_file.exists():
+            self.index_id_map = faiss.read_index(str(index_file))
+            return True
+        return False
 
-    def load_meta(self) -> None:
+    def load_meta(self) -> bool:
         meta_file = self.vector_store / "meta.json"
-        with open(meta_file, "r") as f:
-            self.meta = json.load(f)
+        if meta_file.exists():
+            with open(meta_file, "r") as f:
+                self.meta = json.load(f)
+            return True
+        return False
 
     def vectorize_markdowns(
         self,
         pdf_markdown_maps: dict[str, Path],
     ) -> None:
-        for name, markdown_path in pdf_markdown_maps:
+        for name, markdown_path in pdf_markdown_maps.items():
             chunks = self._split_paper_markdown(markdown_path)
             self._markdown_to_index(name, chunks)
         self.store_index()

@@ -1,12 +1,5 @@
 from pathlib import Path
 
-from src.client import get_client
-from src.types.agent_info import (
-    AgentInputs,
-    AgentOutputs,
-    Conversation,
-)
-
 
 class _Agent(object):
 
@@ -14,7 +7,7 @@ class _Agent(object):
         self,
         prompt_path: Path,
     ):
-        self.client = get_client()
+        pass
 
     def basic_chat(
         self,
@@ -22,4 +15,3 @@ class _Agent(object):
         query: str,
     ) -> str:
         pass
-    

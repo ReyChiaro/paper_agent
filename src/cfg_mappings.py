@@ -4,7 +4,6 @@ from dataclasses import dataclass
 @dataclass
 class ExtractorConfigs:
 
-    model_name: str
     temperature: float
     prompt_file: str
     num_pdf_concurrent: int
@@ -12,12 +11,23 @@ class ExtractorConfigs:
 
 
 @dataclass
+class RAGConfigs:
+
+    rag_chunk: int
+    rag_overlap: int
+    rag_store: str
+    embedding_model: str
+    rag_embed_dim: int
+    rag_topk: int
+
+
+@dataclass
 class Configs:
 
-    api_key: str
-    base_url: str
+    # api_key: str
+    # base_url: str
 
-    embed_name: str
+    # embed_name: str
     # extract_model_name: str
     model_name: str
 
@@ -36,3 +46,4 @@ class Configs:
     index_file: str
 
     extractor: ExtractorConfigs
+    rag: RAGConfigs

@@ -1,47 +1,54 @@
+import src._force_single_process
+
 import os
 import hydra
-import asyncio
-import logging
+import torch
+import traceback
 
 from pathlib import Path
 from hydra.utils import instantiate
 
-from src.cfg_mappings import Configs
 from src.pdf_extractor import PDFExtractor
+from src.paper_rag import PaperRAG
+from src.cfg_mappings import Configs
+from src.controller import Controller
+from src.types.agent_info import AgentInputs
 
 
+@torch.inference_mode()
 @hydra.main(config_path="configs", config_name="configs", version_base="v1.2")
 def main(configs: Configs):
 
-    os.environ["API_KEY"] = configs.api_key
-    os.environ["BASE_URL"] = configs.base_url
+    pdf_extractor = PDFExtractor(instantiate(configs.extractor))
+    rag = PaperRAG(instantiate(configs.rag))
 
-    async def demo(configs: Configs):
-        pdf_paths = [
-            Path(f"{os.getcwd()}/documents/{f}")
-            for f in os.listdir("documents")
-            if f.endswith(".pdf")
-        ]
+    controller = Controller(
+        configs,
+        extractor=pdf_extractor,
+        rag=rag,
+        chat_id=None,
+    )
 
-        extractor_cfgs = instantiate(configs.extractor)
-        extractor = PDFExtractor(
-            extractor_cfgs=extractor_cfgs,
-            pdf_paths=pdf_paths,
-        )
-        results = [
-            extractor.convert_pdf_to_markdown(pdf_path) for pdf_path in pdf_paths
-        ]
-        save_dirs, filenames, titles = zip(*results)
-        print(save_dirs, filenames, titles)
+    inputs = AgentInputs(
+        files=[Path("documents") / p for p in os.listdir(f"documents")],
+        query=[],
+        texts="What is the titles of these papers?",
+    )
 
-        file_paths = extractor.files_repeat_check(
-            [save_dir / filenames for save_dir, filenames in zip(save_dirs, filenames)]
-        )
-        results = [extractor.upload_file(file_path) for file_path in file_paths]
-        print(results)
-
-    asyncio.run(demo(configs))
+    print(inputs)
+    inputs = controller.preprocess(
+        inputs,
+        force_refresh=True,
+        multiround=False,
+        enable_rag=True,
+    )
+    print(inputs)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        traceback.print_exc()
+        exit(1)

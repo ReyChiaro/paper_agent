@@ -8,9 +8,13 @@ wheels/
 
 outputs
 documents
+vector_store
+vectorstore
 
++.index
 _*[A-Za-z0-9].py
 configs.yaml
+model_configs.yaml
 hydra*
 test.py
 *.log

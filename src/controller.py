@@ -1,12 +1,11 @@
-import os
 import json
 
+from pathlib import Path
 from dataclasses import asdict
 from datetime import datetime
-from pathlib import Path
 from typing import Optional, Union, Any
 
-from src.paper_agent import PaperAgent
+from src.logger import get_logger
 from src.paper_rag import PaperRAG
 from src.pdf_extractor import PDFExtractor
 from src.types.agent_info import (
@@ -15,9 +14,11 @@ from src.types.agent_info import (
     Conversation,
 )
 from src.types.agent_info import ExtractorOutputs
-from src.cfg_mappings import Configs
+from src.cfg_mappings import Configs 
+from src.singleton import singleton
 
 
+@singleton
 class Controller:
     """
     Controller class is singleton class used to check data types and manage the logic flow between different components of the agent.
@@ -26,10 +27,13 @@ class Controller:
     def __init__(
         self,
         cfgs: Configs,
+        extractor: PDFExtractor,
+        rag: PaperRAG,
         chat_id: Optional[str] = None,
     ) -> None:
 
         self.cfgs = cfgs
+        self.logger = get_logger(__name__)
 
         # Conversation manage
         self.win_size = self.cfgs.history_window
@@ -38,30 +42,30 @@ class Controller:
         self.chat_id = chat_id
         self.chat_file = f"chat-{self.chat_id}.json"
         self.separator = "\n"
+        self.logger.info(f"Chat initialized with ID: {self.chat_id}")
 
         # File manage
-        file_indices_str = (
-            open(Path(self.cfgs.output_dir) / self.cfgs.index_file)
-            .read()
-            .replace("\n", ",")
-        )
-        self.file_indices = json.loads(f"[{file_indices_str}]")
+        self.output_dir = Path(self.cfgs.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.conversation_dir = Path(self.cfgs.conversations)
+        self.conversation_dir.mkdir(parents=True, exist_ok=True)
 
-        self.agent = PaperAgent()
-        self.rag = PaperRAG(
-            rag_chunk=self.cfgs.rag_chunk,
-            rag_overlap=self.cfgs.rag_overlap,
-            vector_store=self.cfgs.rag_store,
-            embedding_model=self.cfgs.embed_name,
-            embedding_dim=self.cfgs.rag_embed_dim,
-        )
+        self.file_meta_map = {}
+        if (self.output_dir / self.cfgs.index_file).exists():
+            with open(self.output_dir / self.cfgs.index_file, "r") as f:
+                self.file_meta_map = json.load(f)
+        self.logger.info(f"Document indices loaded")
+
+        self.rag = rag
+        self.extractor = extractor
+        self.logger.info(f"Models initialized")
 
     def _init_chat(self) -> str:
         chat_id = datetime.now().strftime("%Y%m%d%H%M%S")
         return chat_id
 
     def _load_history_conversations(self) -> list[Conversation]:
-        history_file = Path(self.cfgs.conversations) / self.chat_file
+        history_file = self.conversation_dir / self.chat_file
         convs = list[Conversation] = []
         contents = open(history_file, "r").read().split(self.separator)
         for content in contents:
@@ -87,7 +91,7 @@ class Controller:
             file_refs=file_refs,
         )
         json_str = json.dumps(asdict(conversation))
-        history_file = Path(self.cfgs.conversations) / self.chat_file
+        history_file = self.conversation_dir / self.chat_file
         with open(history_file, "a") as f:
             f.write(json_str + self.separator)
         return history_file
@@ -95,95 +99,101 @@ class Controller:
     def _convert_conversations_to_message(
         self,
         conversations: list[Conversation],
-    ) -> tuple[list[dict[str, str]], set[str]]:
+    ) -> tuple[list[dict[str, str]], list[Path]]:
         contents = []
         files = set()
         for conv in conversations:
             contents.append({"role": conv.role, "content": conv.content})
             files.update(conv.file_refs)
-        return contents, files
+        return contents, [Path(file) for file in files]
 
     def _write_extractor_outputs_to_meta(
         self,
         extractor_outputs: ExtractorOutputs,
     ) -> None:
-        meta_file = Path(self.cfgs.output_dir) / self.cfgs.meta_file
+        meta_file = extractor_outputs.save_dir / self.cfgs.meta_file
         meta_data = {
             "filename": extractor_outputs.filename,
             "paper_title": extractor_outputs.paper_title,
             "normalized_title": extractor_outputs.normalized_title,
             "save_dir": str(extractor_outputs.save_dir),
             "num_images": extractor_outputs.num_images,
-            "images": extractor_outputs.images,
+            "images": list(extractor_outputs.images),
             "pdf": str(extractor_outputs.save_dir / extractor_outputs.filename),
         }
         with open(meta_file, "w") as f:
             json.dump(meta_data, f, indent=4)
 
-    def _update_file_indices(
+    def _update_file_meta_map(
         self,
-        pdf_file: Path,
+        pdf_name: Path,
         meta_file: Path,
     ) -> None:
-        self.file_indices[pdf_file.name] = meta_file
+        self.file_meta_map[pdf_name] = str(meta_file)
 
-    def _write_file_indices(self) -> None:
-        with open(self.cfgs.output_dir / self.cfgs.index_file, "w") as f:
-            for p, m in self.file_indices.items():
-                f.write('\{"{}": "{}"\}\n'.format(p.name, str(m)))
+    def _write_file_meta_map(self) -> None:
+        with open(Path(self.cfgs.output_dir) / self.cfgs.index_file, "w") as f:
+            json.dump(self.file_meta_map, f, indent=4)
 
     def _store_file_in_markdown(
         self,
-        file_paths: Union[list[Path], str, Path],
+        file_paths: Union[list[Path], Path],
     ) -> ExtractorOutputs:
-        if isinstance(file_paths, str):
-            file_paths = [Path(file_paths)]
         if isinstance(file_paths, Path):
             file_paths = [file_paths]
-        extractor = PDFExtractor(extractor_cfgs=self.cfgs.extractor)
         # Update the stored markdowns in the disk
         results: list[ExtractorOutputs] = [
-            extractor.convert_pdf_to_markdown(f) for f in file_paths
+            self.extractor.convert_pdf_to_markdown(f) for f in file_paths
         ]
         for res in results:
             # Update meta file in the disk
             self._write_extractor_outputs_to_meta(res)
             # Update the file indices in the memory not the disk
-            self._update_file_indices(
-                res.save_dir / res.filename,
-                res.save_dir / self.cfgs.meta_file,
+            self._update_file_meta_map(
+                pdf_name=res.filename,
+                meta_file=res.save_dir / self.cfgs.meta_file,
             )
         # Write the file indices to the disk
-        self._write_file_indices()
+        self._write_file_meta_map()
         return results
 
     def _store_markdown_in_rag(
         self,
         pdf_markdown_maps: dict[str, Path],
-    ) -> Path:
+    ) -> tuple[Path]:
         """
         Store markdown into RAG vector store, no matter if the markdowns are already stored in the vector store, this method will always refresh the vector store with the new markdowns. So make sure the markdowns are filtered before calling.
         """
-        self.rag.load_index()
-        self.rag.load_meta()
+        vector_store_path = self.rag.get_vector_store_meta_path()
+        vector_store_meta_path = self.rag.get_vector_store_meta_path()
+        if vector_store_path.exists() and vector_store_meta_path.exists():
+            self.rag.load_index()
+            self.rag.load_meta()
         self.rag.vectorize_markdowns(pdf_markdown_maps)
-        return Path(self.cfgs.rag_store) / "vectors.index"
+        return vector_store_path, vector_store_meta_path
 
     def _load_document_chunks(
         self,
-        query: str,
+        query_texts: str,
     ) -> list[dict[str, Any]]:
-        self.rag.load_index()
-        self.rag.load_meta()
-        id2cid = self.rag.id2chunk
-        query_embed = self.rag.embedding_model.encode(query)
-        _, ids = self.rag.index_id_map.search(query_embed, self.cfgs.rag_topk)
-        chunks = []
-        for cid in ids[0]:
-            if cid in id2cid:
-                uuid_key = id2cid[cid]
-                chunks.append(self.rag.meta[uuid_key])
-        return chunks
+        try:
+            self.rag.load_index()
+            self.rag.load_meta()
+            print(query_texts)
+            id2cid = self.rag.id2chunk
+            query_embeds = self.rag.encode(query_texts)
+            print(self.rag.index_id_map.ntotal, query_embeds.shape)
+            _, ids = self.rag.search(query_embeds)
+            print(ids)
+            chunks = []
+            for cid in ids[0]:
+                if cid in id2cid:
+                    uuid_key = id2cid[cid]
+                    chunks.append(self.rag.meta[uuid_key])
+            return chunks
+        except Exception as e:
+            self.logger.warning(f"Failed to load document chunks: {e}")
+            return []
 
     def _convert_rag_chunks_to_message(
         self,
@@ -201,6 +211,7 @@ class Controller:
         agent_inputs: AgentInputs,
         force_refresh: bool = False,
         multiround: bool = False,
+        enable_rag: bool = False,
     ) -> AgentInputs:
         """
         Preprocess the inputs of agent. This method will load prompts and concatenate the prompts with the user query, the markdowns if exist, and the history messages if `multiround=True`, to construct a complete query for the LLM.
@@ -217,48 +228,59 @@ class Controller:
             force_refresh (bool, optional): If True, the method will always refresh the markdown, even if it is already stored locally. Defaults to False.
             multiround (bool, optional): If True, the method will load the history messages and concatenate them with the user query. Defaults to False.
         """
-        files: set[str] = agent_inputs.files
-        query: list[dict[str, str]] = agent_inputs.query
-        enable_rag: bool = True
+        files: list[Path] = agent_inputs.files
+        texts: str = agent_inputs.texts
+        enable_rag: bool = enable_rag
 
         if force_refresh:
-            extractor_out = self._store_file_in_markdown([Path(f) for f in files])
-            self._store_markdown_in_rag(
-                {
-                    out.paper_title: out.save_dir / f"{out.normalized_title}.md"
-                    for out in extractor_out
-                }
+            self.logger.info(
+                f"`force_refresh` is enabled, all files "
+                f"will be re-extractied into markdowns and "
+                f"re-stored into vector stores."
             )
-        elif files.intersection(set(self.file_indices.keys())):
-            # Detect the repeated files
-            candidate_files = [
-                Path(f).name for f in files if f not in self.file_indices.keys()
-            ]
-            if candidate_files:
-                markdown_paths = self._store_file_in_markdown(
-                    [Path(f) for f in candidate_files]
-                )
-                self._store_markdown_in_rag(markdown_paths)
+            self.logger.info(f"Following files will be refreshed: {files}")
+            extractor_out = self._store_file_in_markdown(files)
+            self._store_markdown_in_rag(
+                {out.paper_title: out.save_dir / out.save_name for out in extractor_out}
+            )
 
-        # After extracting the files,
-        # all selected files map to a meta file,
-        # where the converted markdown information is stored.
+        # Detect the repeated files
+        candidate_files = [f for f in files if f.name not in self.file_meta_map.keys()]
+        if candidate_files:
+            self.logger.info(f"Following files will be newly stored: {files}")
+            extractor_out = self._store_file_in_markdown(candidate_files)
+            self._store_markdown_in_rag(
+                {out.paper_title: out.save_dir / out.save_name for out in extractor_out}
+            )
 
-        if not query:
+        self.logger.info(
+            f"Files are all extracted/stored:"
+            f"\nMarkdown: {self.cfgs.output_dir}"
+            f"\nRAG: {self.cfgs.rag.rag_store}"
+        )
+
+        if not texts:
             enable_rag = False
             if not files:
-                q = open(Path(self.cfgs.init_prompt_dir) / "_greetings.md").read()
+                texts = open(Path(self.cfgs.init_prompt_dir) / "_greetings.md").read()
             else:
-                q = open(Path(self.cfgs.init_prompt_dir) / "_summary.md").read()
-            query = [{"role": "user", "content": q}]
+                texts = open(Path(self.cfgs.init_prompt_dir) / "_summary.md").read()
 
         sys_prompts = open(
             Path(self.cfgs.init_prompt_dir)
             / f"_sys_prompts{'_rag' if enable_rag else ''}.md"
         ).read()
         agent_inputs.query = [{"role": "system", "content": sys_prompts}]
+
         if enable_rag:
-            rag_chunks = self._load_document_chunks(query)
+            self.logger.info("Using RAG to retrieve relevant documents")
+            import traceback
+            try:
+                rag_chunks = self._load_document_chunks(texts)
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(e)
+            self.logger.info(f"{len(rag_chunks)} found in vector store")
             if rag_chunks:
                 rag_contents = self._convert_rag_chunks_to_message(rag_chunks)
                 agent_inputs.query.extend(rag_contents)
@@ -266,6 +288,7 @@ class Controller:
                 agent_inputs.query.append(
                     {"role": "system", "content": "No relevant documents found."}
                 )
+
         if multiround:
             conversations = self._load_history_conversations()
             contents, refs = self._convert_conversations_to_message(
@@ -274,10 +297,12 @@ class Controller:
                 else conversations
             )
             agent_inputs.query.extend(contents)
-            agent_inputs.files.update(refs)
+            agent_inputs.files.extend(refs)
 
-        agent_inputs.query.append({"role": "user", "content": query})
-        agent_inputs.files.update(files)
+        agent_inputs.query.append({"role": "user", "content": texts})
+        # BUG replace with set update
+        agent_inputs.files.extend(files)
+        agent_inputs.files = list[set(agent_inputs.files)]
 
         return agent_inputs
 
