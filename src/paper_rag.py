@@ -1,118 +1,157 @@
+"""
+For this module, `faiss` is not used for both embedding and searching,
+this module provides an LLM based embedding and a cos-similarity based search methods.
+The embeddings are stored in vector_store, configured in `configs/`.
+"""
+
 import uuid
 import json
-import faiss
 import numpy as np
 
+from openai import OpenAI
 from typing import Union
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
 from src.singleton import singleton
 from src.cfg_mappings import RAGConfigs
+from src.logger import get_logger
 
 
 @singleton
 class PaperRAG:
 
-    def __init__(self, rag_configs: RAGConfigs) -> None:
+    def __init__(self, cfgs: RAGConfigs, client: OpenAI) -> None:
 
-        self.rag_chunk = rag_configs.rag_chunk
-        self.rag_overlap = rag_configs.rag_overlap
-        self.vector_store = Path(rag_configs.rag_store)
-        self.vector_store.mkdir(parents=True, exist_ok=True)
-        self.rag_topk = rag_configs.rag_topk
+        self.logger = get_logger(__name__)
 
-        self.meta = {}
+        self._embeddings = []
+        self._chunks = []
+        self._ids = []
 
-        self.embedding_model = SentenceTransformer(rag_configs.embedding_model, device="cpu")
-        self.index_model = faiss.IndexFlatL2(rag_configs.rag_embed_dim)
-        self.index_id_map = faiss.IndexIDMap(self.index_model)
+        self.num_chunks = cfgs.num_chunks
+        self.overlap = cfgs.overlap
+        self.topk = cfgs.topk
 
-    @property
-    def id2chunk(self):
-        return {int(uuid.UUID(k)) >> 64: k for k in self.meta.keys()}
+        self.store_dir = Path(cfgs.store_dir)
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        self.meta_file = self.store_dir / cfgs.meta_file
+        self.embed_file = self.store_dir / cfgs.embed_file
 
-    def get_vector_store_path(self) -> Path:
-        return self.vector_store / "vectors.index"
+        self.client = client
+        self.embedding_name = cfgs.embedding_model
+        self.embedding_dim = cfgs.embed_dim
 
-    def get_vector_store_meta_path(self) -> Path:
-        return self.vector_store / "meta.json"
+        # Load existing metadata and embeddings if available
+        if self.meta_file.exists():
+            self._load_meta()
+        if self.embed_file.exists():
+            self._load_embeddings()
 
-    def _split_paper_markdown(
+    def _load_meta(self) -> None:
+        with open(self.meta_file, "r") as f:
+            contents = json.load(f)
+        self._ids = contents.keys()
+        self._chunks = [contents[k]["chunk"] for k in self._ids]
+
+    def _save_meta(self) -> None:
+        contents = {
+            k: {"chunk": self._chunks[i], "chunk_id": k}
+            for i, k in enumerate(self._ids)
+        }
+        with open(self.meta_file, "w") as f:
+            json.dump(contents, f, indent=4)
+
+    def _load_embeddings(self) -> None:
+        self._embeddings = np.load(self.embed_file).tolist()
+
+    def _save_embeddings(self) -> None:
+        np.save(self.embed_file, np.array(self._embeddings, dtype=np.float32))
+
+    def _add(
         self,
-        paper_markdown_path: Path,
-    ) -> list[str]:
-        with open(paper_markdown_path, "r") as f:
-            contents = f.read()
-        words = contents.split()
-        chunks = []
+        normalized_embedding: np.ndarray,
+        chunk_info: dict[str, str],
+    ) -> None:
+        if np.linalg.norm(normalized_embedding) != 1:
+            normalized_embedding = normalized_embedding / np.linalg.norm(
+                normalized_embedding, axis=1, keepdims=True
+            )
+        uid = str(uuid.uuid4())
+        uid = int(uuid.UUID(uid)) >> 64
+        self._embeddings.append(normalized_embedding)
+        self._ids.append(uid)
+        self._chunks.append(chunk_info)
+
+    def split_document(self, document_contents: str) -> list[str]:
         start = 0
+        chunks = []
+        words = document_contents.split()
         while start < len(words):
-            chunks.append(" ".join(words[start : start + self.rag_chunk]))
-            start += self.rag_chunk - self.rag_overlap
+            chunks.append(" ".join(words[start : start + self.num_chunks]))
+            start += self.num_chunks - self.overlap
         return chunks
 
-    def _markdown_to_index(
+    def embed(self, chunks: Union[list[str], str]) -> np.ndarray:
+        if isinstance(chunks, str):
+            chunks = [chunks]
+        embeddings = []
+        for chunk in chunks:
+            try:
+                response = self.embedding_model.embeddings.create(
+                    model=self.embedding_name,
+                    input=chunk,
+                    dimensions=self.embedding_dim,
+                    encoding_format="float",
+                ).model_dump()
+                embeds = response["data"][0]["embedding"]
+            except Exception as e:
+                embeds = [0.0] * self.embedding_dim
+            finally:
+                embeddings.append(embeds)
+        embeddings = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return np.array(embeddings, dtype=np.float32)
+
+    def search(self, query: str) -> list[tuple[float, dict[str, str]]]:
+        if len(self._embeddings) == 0:
+            return []
+        query_embed = self.embed(query)
+        embeds = np.stack(self._embeddings, axis=0)
+        scores = np.dot(embeds, query_embed)
+        topk_indices = np.argsort(scores)[-self.topk :][::-1]
+        topk_uid = self._ids[topk_indices]
+        results = [(scores[i], self._chunks[topk_uid[i]]) for i in topk_indices]
+        return results
+
+    def _vectorization(
         self,
-        name: str,
-        chunks: list[str],
+        path: Union[str, Path],
+        document_name: str,
     ) -> None:
-        ids = []
-        vectors = []
-        embeds = self.embedding_model.encode(chunks)
+        if isinstance(path, str):
+            path = Path(path)
+        if not path.exists():
+            self.logger.warning(f"Path {path} does not exist.")
+            return
+        with open(path, "r") as f:
+            contents = f.read()
+        chunks = self.split_document(contents)
+        chunk_infos = [{"filename": document_name, "chunk": chunk} for chunk in chunks]
+        embeds = self.embed(chunks)
+        for embed, chunk_info in zip(embeds, chunk_infos):
+            self._add(embed, chunk_info)
 
-        for i, chunk in enumerate(chunks):
-            chunk_id = str(uuid.uuid4())
-            vectors.append(embeds[i])
-            ids.append(int(uuid.UUID(chunk_id)) >> 64)
-            self.meta[chunk_id] = {
-                "paper": name,
-                "chunk": chunk,
-                "chunk_id": chunk_id,
-            }
-
-        self.index_id_map.add_with_ids(
-            np.array(vectors, dtype=np.float32),
-            np.array(ids, dtype=np.int64),
-        )
-
-    def encode(self, texts: Union[list[str], str]) -> np.ndarray:
-        if isinstance(texts, str):
-            texts = [texts]
-        return self.embedding_model.encode(texts).astype(np.float32)
-
-    def search(self, query_embeds: np.ndarray):
-        return self.index_id_map.search(query_embeds, self.rag_topk)
-
-    def store_index(self) -> None:
-        faiss.write_index(self.index_id_map, str(self.vector_store / "vectors.index"))
-
-    def store_meta(self) -> None:
-        meta_file = self.vector_store / "meta.json"
-        with open(meta_file, "w") as f:
-            json.dump(self.meta, f, indent=4)
-
-    def load_index(self) -> bool:
-        index_file = self.vector_store / "vectors.index"
-        if index_file.exists():
-            self.index_id_map = faiss.read_index(str(index_file))
-            return True
-        return False
-
-    def load_meta(self) -> bool:
-        meta_file = self.vector_store / "meta.json"
-        if meta_file.exists():
-            with open(meta_file, "r") as f:
-                self.meta = json.load(f)
-            return True
-        return False
-
-    def vectorize_markdowns(
+    def vectorization_runtime(
         self,
-        pdf_markdown_maps: dict[str, Path],
+        path: Union[str, Path],
+        document_name: str,
     ) -> None:
-        for name, markdown_path in pdf_markdown_maps.items():
-            chunks = self._split_paper_markdown(markdown_path)
-            self._markdown_to_index(name, chunks)
-        self.store_index()
-        self.store_meta()
+        self._vectorization(path, document_name)
+
+    def vectorization_persistent(
+        self,
+        path: Union[str, Path],
+        document_name: str,
+    ) -> None:
+        self._vectorization(path, document_name)
+        self._save_meta()

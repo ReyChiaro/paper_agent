@@ -4,13 +4,14 @@ from typing import Literal, Optional
 
 
 @dataclass
-class ExtractorOutputs:
+class ExtractorOutput:
 
-    filename: str
+    pdf_path: Path
+    pdf_name: str
     paper_title: str
     normalized_title: str
     save_dir: Path
-    save_name: str
+    markdown_name: str
     num_images: int
     images: list[str]
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from src.singleton import singleton
 from src.logger import get_logger, beautified_tqdm
 from src.cfg_mappings import ExtractorConfigs
-from src.types.agent_info import ExtractorOutputs
+from src.types.agent_info import ExtractorOutput
 
 
 @singleton
@@ -67,7 +67,7 @@ class PDFExtractor:
     def convert_pdf_to_markdown(
         self,
         pdf_path: Path,
-    ) -> ExtractorOutputs:
+    ) -> ExtractorOutput:
 
         self.logger.info(f"Using `marker` to convert PDF: {pdf_path}")
         with beautified_tqdm():
@@ -92,12 +92,13 @@ class PDFExtractor:
 
         self.logger.info(f"Markdown files and images saved to {save_dir}")
 
-        outputs = ExtractorOutputs(
-            filename=pdf_path.name,
+        outputs = ExtractorOutput(
+            pdf_path=pdf_path,
+            pdf_name=pdf_path.name,
             paper_title=title,
             normalized_title=normalized_title,
             save_dir=save_dir,
-            save_name=f"{normalized_title}.md",
+            markdown_name=f"{normalized_title}.md",
             num_images=len(images),
             images=images.keys(),
         )

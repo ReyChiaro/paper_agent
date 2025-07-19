@@ -13,37 +13,30 @@ class ExtractorConfigs:
 @dataclass
 class RAGConfigs:
 
-    rag_chunk: int
-    rag_overlap: int
-    rag_store: str
+    num_chunks: int
+    overlap: int
+    store_dir: str
     embedding_model: str
-    rag_embed_dim: int
-    rag_topk: int
+    meta_file: str
+    embed_file: str
+    embed_dim: int
+    topk: int
 
 
 @dataclass
 class Configs:
 
-    # api_key: str
-    # base_url: str
-
-    # embed_name: str
-    # extract_model_name: str
+    api_key: str
+    base_url: str
     model_name: str
-
+    embed_name: str
     history_window: int
-    rag_chunk: int
-    rag_overlap: int
-    rag_store: str
-    rag_embed_dim: int
-    rag_topk: int
-
     prompt_dir: str
     init_prompt_dir: str
     conversations: str
     output_dir: str
     meta_file: str
-    index_file: str
+    embed_file: str
 
     extractor: ExtractorConfigs
     rag: RAGConfigs

@@ -1,0 +1,11 @@
+cli:
+  paper: null
+
+launcher:
+  meta_file: .meta.json
+  prompt_dir: prompts
+  rag_dir: rag
+  output_dir: output
+  api_key: api-key
+  base_url: base-url
+  chat_model: chat-model

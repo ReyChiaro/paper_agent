@@ -11,4 +11,5 @@ dependencies = [
     "rich>=10.2.0",
     "sentence-transformers>=4.1.0",
     "torch==2.6.0",
+    "torchvision>=0.21.0",
 ]
