@@ -4,7 +4,10 @@ import logging
 from pathlib import Path
 from openai import OpenAI
 
+from src.singleton import singleton
+from src.debug_utils import variable_check
 
+@singleton
 class Launcher:
     """
     This project is relied on `.meta.json`, which is a metadata file that contains information about the project structure / documents information / rag information. Ensure that the project directory structure is as follows:
@@ -36,7 +39,7 @@ class Launcher:
         api_key: str = "",
         base_url: str = "",
         chat_model: str = "",
-    ):
+    ) -> None:
         self.logger = logging.getLogger(__name__)
 
         self.root = Path(os.getcwd())
@@ -45,11 +48,12 @@ class Launcher:
         self.rag_dir = Path(rag_dir)
         self.output_dir = Path(output_dir)
         self._init_env()
-        self._load_system_prompts()
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.chat_model = chat_model
+        self.system_prompts = self._load_system_prompts()
 
-    def _init_env(self):
+    def _init_env(self) -> None:
         """
         Check if the project directory structure is correct. If not, create the necessary directories and files.
         """
@@ -68,12 +72,30 @@ class Launcher:
                 )
                 meta_path.touch()
         self.logger.info(f"Launcher running environment initialized.")
-    
-    def _load_system_prompts(self):
-        pass
 
-    def chat(self):
+    def _load_system_prompts(self) -> str:
+        if not self.prompt_dir.exists():
+            raise RuntimeError(
+                f"Prompt files {self.prompt_dir} not found, please create the prompts directory and add prompts in markdown format."
+            )
+        prompt_files = self.prompt_dir.glob("*.md")
+        system_prompts = ""
+        for p in prompt_files:
+            with open(p) as f:
+                system_prompts += f.read()
+                system_prompts += "\n"
+        if not system_prompts:
+            self.logger.warning(f"system_prompts are loaded but are empty.")
+        return system_prompts
+
+    def chat_single_round(self) -> None:
+        variable_check(system_prompt=self.system_prompts)
+        messages = [{"role": "system", "content": self.system_prompts}]
         user_inputs = input("User: ")
-        self.client.chat.completions.create(
-            messages=
+        messages.append({"role": "user", "content": user_inputs})
+        responses = self.client.chat.completions.create(
+            messages=messages,
+            model=self.chat_model,
         )
+        agent_outputs = f"Agent: {responses.choices[0].message.content}"
+        print(agent_outputs)

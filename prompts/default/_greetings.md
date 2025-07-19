@@ -1,1 +1,0 @@
-Hello, how to research today?
